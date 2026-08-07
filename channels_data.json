@@ -1,0 +1,60 @@
+{
+    "channels": {
+        "-1003329818758": {
+            "name": "KOUAMÉ & JOKER PRÉDICTION",
+            "default_duration_seconds": 86400,
+            "members": {
+                "1190237801": {
+                    "expires_at": 1785452534,
+                    "granted_at": 1784847734,
+                    "duration_seconds": 604800
+                }
+            },
+            "blocked": {
+                "5622847726": {
+                    "blocked_at": 1774385455
+                }
+            }
+        },
+        "-1003501017916": {
+            "name": "VIP 2",
+            "default_duration_seconds": 86400,
+            "members": {},
+            "blocked": {}
+        },
+        "-1003341134749": {
+            "name": "KOUAMÉ PRÉDICTION",
+            "default_duration_seconds": 86400,
+            "members": {},
+            "blocked": {}
+        },
+        "-1003933396157": {
+            "name": "VIP PRO",
+            "default_duration_seconds": 86400,
+            "members": {},
+            "blocked": {}
+        }
+    },
+    "global_admins": [
+        1190237801
+    ],
+    "ai_enabled": true,
+    "used_payments": {
+        "6e539a1f3a7778fda2ec38e2": {
+            "user_id": 5622847726,
+            "date": "11/03/2026 00:52",
+            "channel": "VIP 2",
+            "amount_str": "0.03999 BNB → 9,117 FCFA\n💱 _1 BNB ≈ 228,000 FCFA_",
+            "reference": "0X13108641DCFABEA3B2E8DED"
+        }
+    },
+    "ai_config": {
+        "keys": {
+            "gemini": "AIzaSyCQl68Rvpl7nen0OPRN3xcs02hJDnZLHds",
+            "groq": [
+                "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"
+            ]
+        },
+        "provider": "gemini"
+    }
+}

@@ -5,7 +5,7 @@ Configuration pour déploiement Render.com (port 10000)
 
 import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7573497633:AAHk9K15yTCiJP-zruJrc9v8eK8I9XhjyH4")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8359623168:AAHno00lno02QOw5OvGukP0TIgn4sDFB158")
 
 ADMINS_STR = os.getenv("ADMINS", "1190237801")
 ADMINS = [int(x.strip()) for x in ADMINS_STR.split(",") if x.strip()]

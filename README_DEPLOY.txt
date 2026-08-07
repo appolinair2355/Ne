@@ -22,20 +22,18 @@
 
 5. Variables d'environnement à configurer (onglet "Environment") :
 
-   ┌─────────────────────┬────────────────────────────────────────┐
-   │ Clé                 │ Valeur                                 │
-   ├─────────────────────┼────────────────────────────────────────┤
-   │ DATABASE_URL        │ URL PostgreSQL de paiement-s-curis     │
-   │ PORT                │ 5000                                   │
-   └─────────────────────┴────────────────────────────────────────┘
+   AUCUNE variable obligatoire : tout est codé en dur dans config.py
+   (BOT_TOKEN, Telethon, et DATABASE_URL = base_de_donnees_hgxo).
 
-   ⚠️ Toutes les autres valeurs (BOT_TOKEN, clés IA, Telethon)
-   sont déjà codées en dur dans config.py — aucune autre
-   variable d'environnement n'est nécessaire.
+   Optionnel : PORT = 10000
+   Optionnel : DATABASE_URL (si défini, il remplace la valeur du code)
 
-   DATABASE_URL est la seule variable à configurer : c'est
-   l'URL de connexion à votre base PostgreSQL sur Render.com
-   (le même que celui du site paiement-s-curis-50u2.onrender.com).
+   ⚠️ La base utilisée est l'URL EXTERNE (oregon-postgres.render.com)
+   avec SSL, car l'URL interne (dpg-...-a sans domaine) ne fonctionne
+   qu'entre services Render de la même région. Les deux URLs sont dans
+   config.py (DATABASE_URL_EXTERNAL / DATABASE_URL_INTERNAL).
+   Les tables et le compte admin sossoukouam / arrow2026 sont créés
+   automatiquement au démarrage.
 
 6. Cliquer "Create Web Service" → Render installe et démarre
 

@@ -14,7 +14,7 @@ import bcrypt
 import os
 import sys
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+from config import DATABASE_URL  # URL codée en dur dans config.py
 
 ADMIN_USERNAME  = "sossoukouam"
 ADMIN_PASSWORD  = "arrow2026"

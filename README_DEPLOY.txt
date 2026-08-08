@@ -22,20 +22,36 @@
 
 5. Variables d'environnement à configurer (onglet "Environment") :
 
-   AUCUNE variable obligatoire : tout est codé en dur dans config.py
-   (BOT_TOKEN, Telethon, et DATABASE_URL = base_de_donnees_hgxo).
+   Obligatoires :
+   - BOT_TOKEN          → token du bot Telegram
+   - ADMINS             → identifiants Telegram admin, ex. 1190237801
+   - DATABASE_URL       → Internal Database URL de la base Render
+   - ADMIN_USERNAME     → identifiant du compte administrateur initial
+   - ADMIN_PASSWORD     → mot de passe du compte administrateur initial
+   - TELETHON_API_ID    → identifiant API Telegram
+   - TELETHON_API_HASH  → hash API Telegram
+   - TELETHON_SESSION   → session Telethon
 
-   Optionnel : PORT = 10000
-   Optionnel : DATABASE_URL (si défini, il remplace la valeur du code)
+   Facultatives :
+   - ADMIN_FIRST / ADMIN_LAST
+   - GEMINI_API_KEY
 
-   ⚠️ La base utilisée est l'URL EXTERNE (oregon-postgres.render.com)
-   avec SSL, car l'URL interne (dpg-...-a sans domaine) ne fonctionne
-   qu'entre services Render de la même région. Les deux URLs sont dans
-   config.py (DATABASE_URL_EXTERNAL / DATABASE_URL_INTERNAL).
-   Les tables et le compte admin sossoukouam / arrow2026 sont créés
-   automatiquement au démarrage.
+   PORT doit être 10000 pour Render (render.yaml le configure déjà).
+   Utilisez l'Internal Database URL lorsque le bot est un service Render
+   situé dans la même région que la base. Ne publiez jamais cette URL dans
+   un dépôt ou une archive : elle contient le mot de passe PostgreSQL.
 
-6. Cliquer "Create Web Service" → Render installe et démarre
+6. Cliquer "Create Web Service" → Render installe et démarre.
+
+7. Vérifier les logs :
+   - `✅ Connexion PostgreSQL établie`
+   - `✅ Compte admin prêt`
+   - `✅ Bot multi-canal démarré avec succès!`
+
+Le compte administrateur initial est créé automatiquement au premier
+démarrage dans cette même base. Connectez-vous dans le bot via « Se
+connecter » avec ADMIN_USERNAME et ADMIN_PASSWORD. Les inscriptions sont
+enregistrées dans la table `users`.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FONCTIONNEMENT DU SYSTÈME DE PAIEMENT

@@ -19,7 +19,11 @@ from telegram.ext import (
     CallbackQueryHandler, ChatMemberHandler, ContextTypes, filters
 )
 
-from config import BOT_TOKEN, ADMINS, PORT, DATA_FILE, CHECK_INTERVAL, GEMINI_API_KEY, TELETHON_API_ID, TELETHON_API_HASH, DATABASE_URL
+from config import (
+    BOT_TOKEN, ADMINS, PORT, DATA_FILE, CHECK_INTERVAL, GEMINI_API_KEY,
+    TELETHON_API_ID, TELETHON_API_HASH, DATABASE_URL,
+    ADMIN_USERNAME, ADMIN_PASSWORD, ADMIN_FIRST, ADMIN_LAST,
+)
 import telethon_manager
 
 logging.basicConfig(
@@ -44,13 +48,11 @@ if GEMINI_API_KEY:
 # ═══════════════════════════════════════════════════════════════
 # DATABASE_URL importé depuis config.py
 db_pool = None
+db_last_error = None
 
 
 async def init_db_pool():
-    global db_pool
-    if not DATABASE_URL:
-        logger.warning("⚠️ DATABASE_URL non configuré — fonctions DB désactivées")
-        return
+    global db_pool, db_last_error
     try:
         try:
             db_pool = await asyncpg.create_pool(
@@ -78,34 +80,50 @@ async def init_db_pool():
                     subscription_duration_minutes INTEGER,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(120);
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(256);
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT;
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT;
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN DEFAULT FALSE;
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS is_premium BOOLEAN DEFAULT FALSE;
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMPTZ;
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_duration_minutes INTEGER;
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_id BIGINT;
                 CREATE UNIQUE INDEX IF NOT EXISTS users_telegram_id_uniq
                     ON users(telegram_id) WHERE telegram_id IS NOT NULL;
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS plain_password TEXT;
             """)
+            # Les bases utilisées par le site de paiement peuvent avoir été
+            # créées avant ce bot. Les migrations ci-dessus sont volontairement
+            # idempotentes pour ne jamais perdre les inscriptions existantes.
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS users_email_uniq "
+                "ON users(email) WHERE email IS NOT NULL"
+            )
         logger.info("✅ Connexion PostgreSQL établie")
+        db_last_error = None
+        return True
     except Exception as e:
-        logger.error(f"❌ Connexion DB échouée: {e}", exc_info=True)
+        db_last_error = str(e)
+        logger.error(
+            "❌ Connexion DB échouée. Vérifiez DATABASE_URL, l'accès réseau "
+            "Render et les identifiants PostgreSQL: %s", e, exc_info=True
+        )
         db_pool = None
-
-
-# Identifiant/mot de passe de l'administrateur créé automatiquement au démarrage
-# (si le compte n'existe pas encore en base). Mêmes valeurs que seed_admin.py.
-_SEED_ADMIN_USERNAME = "sossoukouam"
-_SEED_ADMIN_PASSWORD = "arrow2026"
-_SEED_ADMIN_FIRST = "Sossou"
-_SEED_ADMIN_LAST = "Kouamé"
+        return False
 
 
 async def db_seed_admin():
-    """Crée automatiquement le compte administrateur sossoukouam au démarrage
+    """Crée automatiquement le compte administrateur au démarrage
     du bot si la base est vide / le compte n'existe pas encore. Idempotent :
     ne fait rien si le compte existe déjà (met juste à jour is_admin=TRUE)."""
     if not db_pool:
         logger.warning("⚠️ Amorçage admin ignoré : pool DB non initialisé")
-        return
+        return False
     try:
-        pw_hash = _bcrypt.hashpw(_SEED_ADMIN_PASSWORD.encode(), _bcrypt.gensalt()).decode()
+        pw_hash = _bcrypt.hashpw(ADMIN_PASSWORD.encode(), _bcrypt.gensalt()).decode()
         async with db_pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -114,16 +132,22 @@ async def db_seed_admin():
                      is_admin, is_approved, plain_password)
                 VALUES ($1, $2, $3, $4, $5, TRUE, TRUE, $6)
                 ON CONFLICT (username) DO UPDATE
-                    SET is_admin = TRUE,
-                        is_approved = TRUE
+                    SET password_hash = EXCLUDED.password_hash,
+                        plain_password = EXCLUDED.plain_password,
+                        is_admin = TRUE,
+                        is_approved = TRUE,
+                        first_name = EXCLUDED.first_name,
+                        last_name = EXCLUDED.last_name
                 RETURNING id, username, is_admin
                 """,
-                _SEED_ADMIN_USERNAME, _SEED_ADMIN_USERNAME, pw_hash,
-                _SEED_ADMIN_FIRST, _SEED_ADMIN_LAST, _SEED_ADMIN_PASSWORD,
+                 ADMIN_USERNAME, ADMIN_USERNAME, pw_hash,
+                 ADMIN_FIRST, ADMIN_LAST, ADMIN_PASSWORD,
             )
         logger.info(f"✅ Compte admin '{row['username']}' prêt (id={row['id']}, is_admin={row['is_admin']})")
+        return True
     except Exception as e:
         logger.error(f"❌ Amorçage admin échoué: {e}", exc_info=True)
+        return False
 
 
 async def db_get_user_by_telegram_id(telegram_id: int):
@@ -298,6 +322,13 @@ async def db_link_telegram_id(db_user_id: int, telegram_id: int) -> bool:
                 "UPDATE users SET telegram_id = $1 WHERE id = $2",
                 int(telegram_id), db_user_id,
             )
+            linked = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND telegram_id = $2)",
+                db_user_id, int(telegram_id),
+            )
+            if not linked:
+                logger.error("Le lien Telegram du compte DB %s n'a pas été enregistré", db_user_id)
+                return False
         return True
     except Exception as e:
         logger.error(f"DB link_telegram_id error: {e}")
@@ -374,7 +405,7 @@ def save_data(data):
 def is_admin(user_id):
     # Un compte est admin si l'UNE des conditions suivantes est vraie :
     # 1. Son ID Telegram figure dans la variable d'environnement ADMINS (accès direct, sans login)
-    # 2. Il s'est connecté avec succès (identifiant "sossoukouam" + mot de passe "arrow2026")
+    # 2. Il s'est connecté avec le compte marqué is_admin=TRUE en base
     #    et son compte est marqué is_admin=TRUE en base — son telegram_id est alors
     #    ajouté à db_admin_telegram_ids (voir handle_user_message / db_reload_admin_ids)
     return user_id in ADMINS or user_id in db_admin_telegram_ids
@@ -462,7 +493,14 @@ async def web_handler(request):
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', web_handler)
-    app.router.add_get('/health', lambda request: web.Response(text="OK"))
+    async def health_handler(request):
+        if db_pool is None:
+            return web.Response(
+                status=503,
+                text=f"DB indisponible: {db_last_error or 'pool non initialisé'}",
+            )
+        return web.Response(text="OK")
+    app.router.add_get('/health', health_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
@@ -854,7 +892,14 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
                 return
             # Connexion OK — lier le telegram_id
-            await db_link_telegram_id(db_user["id"], user.id)
+            if not await db_link_telegram_id(db_user["id"], user.id):
+                login_state.pop(user.id, None)
+                await update.message.reply_text(
+                    "❌ La connexion à votre compte n'a pas pu être enregistrée. "
+                    "Réessayez dans quelques instants.",
+                    reply_markup=_auth_keyboard(),
+                )
+                return
             if db_user.get("is_admin"):
                 db_admin_telegram_ids.add(user.id)
             login_state.pop(user.id, None)
@@ -3580,8 +3625,16 @@ async def main():
         handle_user_message
     ))
 
-    await init_db_pool()
-    await db_seed_admin()
+    if not await init_db_pool():
+        raise RuntimeError(
+            "Démarrage arrêté: la base PostgreSQL est inaccessible. "
+            "Corrigez DATABASE_URL dans Render puis redéployez."
+        )
+    if not await db_seed_admin():
+        raise RuntimeError(
+            "Démarrage arrêté: le compte administrateur n'a pas pu être "
+            "créé ou mis à jour dans PostgreSQL."
+        )
     await db_reload_admin_ids()
     await start_web_server()
     await application.initialize()

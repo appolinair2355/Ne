@@ -13,7 +13,8 @@ from datetime import datetime, timedelta, timezone
 from aiohttp import web
 import asyncpg
 import bcrypt as _bcrypt
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ChatMemberStatus, ChatAction
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ConversationHandler,
     CallbackQueryHandler, ChatMemberHandler, ContextTypes, filters
@@ -1415,7 +1416,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     # Indiquer que le bot est en train d'écrire
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     try:
         response = await ai_reply(user.id, text, bot=context.bot)
@@ -1452,7 +1453,7 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     chat = result.chat
     new_status = result.new_chat_member.status
 
-    if new_status in (ChatMember.ADMINISTRATOR, ChatMember.MEMBER):
+    if new_status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER):
         data = load_data()
         cid = str(chat.id)
         ch = get_channel_data(data, chat.id)
@@ -1488,7 +1489,7 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
 
         asyncio.create_task(scan_channel_members(context, chat.id, chat.title or cid))
 
-    elif new_status in (ChatMember.LEFT, ChatMember.BANNED):
+    elif new_status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
         data = load_data()
         cid = str(chat.id)
         if cid in data["channels"]:
@@ -1606,7 +1607,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if cid not in data.get("channels", {}):
         return
 
-    if new_member.status in (ChatMember.MEMBER, ChatMember.ADMINISTRATOR):
+    if new_member.status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR):
         uid = str(user.id)
         ch = get_channel_data(data, chat.id)
 
@@ -1750,7 +1751,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception as e:
                     logger.error(f"Erreur notif admin {admin_id}: {e}")
 
-    elif new_member.status in (ChatMember.LEFT, ChatMember.BANNED):
+    elif new_member.status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
         uid = str(user.id)
         data = load_data()
         if cid in data.get("channels", {}) and uid in data["channels"][cid].get("members", {}):
@@ -3874,7 +3875,7 @@ async def startup_channel_scan(bot):
                 ch["name"] = new_name
                 updated = True
             member = await bot.get_chat_member(int(cid), bot.id)
-            if member.status in (ChatMember.LEFT, ChatMember.BANNED):
+            if member.status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
                 to_remove.append(cid)
                 logger.warning(f"⚠️ Canal {cid} retiré (bot exclu ou banni).")
             else:
@@ -3916,7 +3917,7 @@ async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYP
 async def main():
     logger.info("🤖 Démarrage du bot multi-canal...")
 
-    application = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
+    application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_error_handler(global_error_handler)
 
@@ -3959,7 +3960,7 @@ async def main():
 
     # Supprime un éventuel webhook actif : sinon start_polling plante avec une erreur
     # "Conflict: can't use getUpdates while a webhook is set" et le bot ne répond plus du tout.
-    await application.bot.delete_webhook(drop_pending_updates=True)
+    await application.bot.delete_webhook()
 
     await application.updater.start_polling(
         drop_pending_updates=True,

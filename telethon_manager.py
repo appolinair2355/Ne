@@ -17,7 +17,11 @@ try:
 except ImportError:
     _CFG_API_ID, _CFG_API_HASH, _CFG_SESSION = 0, "", ""
 
-API_ID = int(os.getenv("TELETHON_API_ID", str(_CFG_API_ID)))
+_api_id_env = os.getenv("TELETHON_API_ID", "")
+if _api_id_env.strip():
+    API_ID = int(_api_id_env)
+else:
+    API_ID = int(_CFG_API_ID) if _CFG_API_ID else 0
 API_HASH = os.getenv("TELETHON_API_HASH", _CFG_API_HASH)
 
 def _load_session_string() -> str:

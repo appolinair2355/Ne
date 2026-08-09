@@ -122,3 +122,16 @@ channels_data.json   → Base de données locale (canaux/membres)
 README_DEPLOY.txt    → Ce fichier
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+--------------------------------------------------------------
+MISE A JOUR : GESTION DES COMPTES (admin)
+--------------------------------------------------------------
+- Nouvelle commande /comptes (alias /accounts) : liste paginee de TOUS les
+  comptes enregistres dans la base de donnees. Reservee a l'administrateur.
+- Nouveau bouton "Comptes enregistres (BD)" dans le panneau administrateur.
+- Pour chaque compte : fiche detaillee (identifiant, email, prenom, nom,
+  mot de passe, Telegram ID, role, approbation, abonnement, date de creation).
+- Actions admin : modifier identifiant / email / prenom / nom / mot de passe,
+  basculer admin, premium, approuve, delier le Telegram ID,
+  et supprimer le compte (avec confirmation).
+- ID administrateur : 1190237801 (variable ADMINS dans config.py).

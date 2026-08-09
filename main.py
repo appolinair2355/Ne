@@ -46,48 +46,98 @@ if GEMINI_API_KEY:
 db_pool = None
 
 
-async def init_db_pool():
-    global db_pool
-    if not DATABASE_URL:
-        logger.warning("⚠️ DATABASE_URL non configuré — fonctions DB désactivées")
-        return
+class DatabaseUnavailable(Exception):
+    """Levée quand la base de données est injoignable (au lieu de renvoyer None,
+    ce qui faisait afficher à tort « Aucun compte trouvé »)."""
+
+
+DB_LAST_ERROR: str | None = None
+
+
+def _mask_db_url(url: str) -> str:
+    """Retourne l'URL sans identifiants, pour les logs."""
     try:
-        try:
-            db_pool = await asyncpg.create_pool(
-                DATABASE_URL, ssl="require", min_size=1, max_size=5, command_timeout=15
-            )
-        except Exception as ssl_err:
-            # Certaines URLs internes Render (Internal Database URL) refusent ssl="require".
-            # On retente sans forcer le SSL avant d'abandonner.
-            logger.warning(f"⚠️ Connexion avec ssl='require' échouée ({ssl_err}), nouvelle tentative sans SSL forcé...")
-            db_pool = await asyncpg.create_pool(
-                DATABASE_URL, min_size=1, max_size=5, command_timeout=15
-            )
-        async with db_pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
-                    username VARCHAR(120) UNIQUE NOT NULL,
-                    email VARCHAR(120) UNIQUE,
-                    password_hash VARCHAR(256) NOT NULL,
-                    first_name TEXT, last_name TEXT,
-                    is_admin BOOLEAN DEFAULT FALSE,
-                    is_approved BOOLEAN DEFAULT FALSE,
-                    is_premium BOOLEAN DEFAULT FALSE,
-                    subscription_expires_at TIMESTAMPTZ,
-                    subscription_duration_minutes INTEGER,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                );
-                ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_id TEXT;
-                ALTER TABLE users ALTER COLUMN telegram_id TYPE TEXT USING telegram_id::text;
-                CREATE UNIQUE INDEX IF NOT EXISTS users_telegram_id_uniq
-                    ON users(telegram_id) WHERE telegram_id IS NOT NULL;
-                ALTER TABLE users ADD COLUMN IF NOT EXISTS plain_password TEXT;
-            """)
-        logger.info("✅ Connexion PostgreSQL établie")
-    except Exception as e:
-        logger.error(f"❌ Connexion DB échouée: {e}", exc_info=True)
-        db_pool = None
+        return _re_mod.sub(r"//[^@]+@", "//***:***@", url)
+    except Exception:
+        return "***"
+
+
+async def init_db_pool():
+    """Ouvre le pool PostgreSQL avec plusieurs tentatives et un SSL adapté à l'hôte.
+
+    - hôte *.render.com (URL externe)  -> SSL obligatoire
+    - hôte interne Render (sans point) -> SSL désactivé
+    En cas d'échec définitif, l'erreur est conservée dans DB_LAST_ERROR et
+    remontée aux utilisateurs au lieu d'être silencieusement masquée.
+    """
+    global db_pool, DB_LAST_ERROR
+    if not DATABASE_URL:
+        DB_LAST_ERROR = "DATABASE_URL non configuré"
+        logger.error("❌ DATABASE_URL non configuré — connexion impossible")
+        return
+
+    logger.info(f"🔌 Connexion à PostgreSQL: {_mask_db_url(DATABASE_URL)}")
+    host = DATABASE_URL.split("@")[-1].split("/")[0].split(":")[0]
+    ssl_modes = ["require", None] if "." in host else [None, "require"]
+
+    last_err = None
+    for attempt in range(1, 4):
+        for ssl_mode in ssl_modes:
+            try:
+                db_pool = await asyncpg.create_pool(
+                    DATABASE_URL,
+                    ssl=ssl_mode,
+                    min_size=1,
+                    max_size=5,
+                    command_timeout=15,
+                    timeout=20,
+                    statement_cache_size=0,
+                )
+                async with db_pool.acquire() as conn:
+                    await conn.execute("""
+                        CREATE TABLE IF NOT EXISTS users (
+                            id SERIAL PRIMARY KEY,
+                            username VARCHAR(120) UNIQUE NOT NULL,
+                            email VARCHAR(120) UNIQUE,
+                            password_hash VARCHAR(256) NOT NULL,
+                            first_name TEXT, last_name TEXT,
+                            is_admin BOOLEAN DEFAULT FALSE,
+                            is_approved BOOLEAN DEFAULT FALSE,
+                            is_premium BOOLEAN DEFAULT FALSE,
+                            subscription_expires_at TIMESTAMPTZ,
+                            subscription_duration_minutes INTEGER,
+                            created_at TIMESTAMPTZ DEFAULT NOW()
+                        );
+                        ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_id TEXT;
+                        ALTER TABLE users ALTER COLUMN telegram_id TYPE TEXT USING telegram_id::text;
+                        CREATE UNIQUE INDEX IF NOT EXISTS users_telegram_id_uniq
+                            ON users(telegram_id) WHERE telegram_id IS NOT NULL;
+                        ALTER TABLE users ADD COLUMN IF NOT EXISTS plain_password TEXT;
+                        CREATE INDEX IF NOT EXISTS users_username_lower_idx ON users(LOWER(username));
+                        CREATE INDEX IF NOT EXISTS users_email_lower_idx ON users(LOWER(email));
+                    """)
+                    nb = await conn.fetchval("SELECT COUNT(*) FROM users")
+                DB_LAST_ERROR = None
+                logger.info(
+                    f"✅ Connexion PostgreSQL établie (host={host}, ssl={ssl_mode or 'off'}, {nb} compte(s) en base)"
+                )
+                return
+            except Exception as e:
+                last_err = e
+                if db_pool is not None:
+                    try:
+                        await db_pool.close()
+                    except Exception:
+                        pass
+                    db_pool = None
+                logger.warning(
+                    f"⚠️ Tentative {attempt} (ssl={ssl_mode or 'off'}) échouée: {type(e).__name__}: {e}"
+                )
+        await asyncio.sleep(2 * attempt)
+
+    DB_LAST_ERROR = f"{type(last_err).__name__}: {last_err}"
+    logger.error(f"❌ Connexion DB impossible après 3 tentatives: {DB_LAST_ERROR}")
+    db_pool = None
 
 
 # Identifiant/mot de passe de l'administrateur créé automatiquement au démarrage
@@ -211,18 +261,25 @@ async def db_check_subscription(telegram_id: int):
 
 
 async def db_get_user_by_email(email: str):
-    """Recherche un utilisateur par email."""
+    """Recherche un utilisateur par email OU nom d'utilisateur (insensible à la casse
+    et aux espaces). Lève DatabaseUnavailable si la base est injoignable, afin de ne
+    plus confondre « base en panne » et « compte inexistant »."""
     if not db_pool:
+        raise DatabaseUnavailable(DB_LAST_ERROR or "pool non initialisé")
+    ident = (email or "").strip().lower()
+    if not ident:
         return None
     try:
         async with db_pool.acquire() as conn:
             return await conn.fetchrow(
-                "SELECT * FROM users WHERE email = $1 OR username = $1",
-                email.lower().strip(),
+                """SELECT * FROM users
+                   WHERE LOWER(TRIM(email)) = $1 OR LOWER(TRIM(username)) = $1
+                   LIMIT 1""",
+                ident,
             )
     except Exception as e:
-        logger.error(f"DB get_user_by_email error: {e}")
-        return None
+        logger.error(f"DB get_user_by_email error: {e}", exc_info=True)
+        raise DatabaseUnavailable(str(e)) from e
 
 
 async def db_reload_admin_ids():
@@ -1038,7 +1095,18 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             if not login_id:
                 await update.message.reply_text("⚠️ Identifiant invalide. Entrez votre nom d'utilisateur ou votre email:")
                 return
-            db_user = await db_get_user_by_email(login_id)
+            try:
+                db_user = await db_get_user_by_email(login_id)
+            except DatabaseUnavailable as e:
+                login_state.pop(user.id, None)
+                logger.error(f"Connexion impossible (DB indisponible): {e}")
+                await update.message.reply_text(
+                    "🛠 **Base de données momentanément indisponible.**\n\n"
+                    "Votre compte existe toujours : réessayez dans quelques instants.",
+                    parse_mode="Markdown",
+                    reply_markup=_auth_keyboard(),
+                )
+                return
             if not db_user:
                 login_state.pop(user.id, None)
                 await update.message.reply_text(
@@ -1058,7 +1126,14 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         elif step == "password":
             password = text.strip()
-            db_user = await db_get_user_by_email(state.get("email", ""))
+            try:
+                db_user = await db_get_user_by_email(state.get("email", ""))
+            except DatabaseUnavailable as e:
+                logger.error(f"Vérification mot de passe impossible (DB): {e}")
+                await update.message.reply_text(
+                    "🛠 Base de données momentanément indisponible. Réessayez dans un instant."
+                )
+                return
             if not db_user:
                 login_state.pop(user.id, None)
                 await update.message.reply_text(

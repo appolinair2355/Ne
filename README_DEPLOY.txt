@@ -22,36 +22,36 @@
 
 5. Variables d'environnement à configurer (onglet "Environment") :
 
-   Obligatoires :
-   - BOT_TOKEN          → token du bot Telegram
-   - ADMINS             → identifiants Telegram admin, ex. 1190237801
-   - DATABASE_URL       → Internal Database URL de la base Render
-   - ADMIN_USERNAME     → identifiant du compte administrateur initial
-   - ADMIN_PASSWORD     → mot de passe du compte administrateur initial
-   - TELETHON_API_ID    → identifiant API Telegram
-   - TELETHON_API_HASH  → hash API Telegram
-   - TELETHON_SESSION   → session Telethon
+   AUCUNE variable obligatoire : tout est codé en dur dans config.py
+   (BOT_TOKEN, Telethon, et DATABASE_URL = base_de_donnees_hgxo).
 
-   Facultatives :
-   - ADMIN_FIRST / ADMIN_LAST
-   - GEMINI_API_KEY
+   Optionnel : PORT = 10000
+   Optionnel : DATABASE_URL (si défini, il remplace la valeur du code)
 
-   PORT doit être 10000 pour Render (render.yaml le configure déjà).
-   Utilisez l'Internal Database URL lorsque le bot est un service Render
-   situé dans la même région que la base. Ne publiez jamais cette URL dans
-   un dépôt ou une archive : elle contient le mot de passe PostgreSQL.
+   ⚠️ La base utilisée est l'URL EXTERNE (oregon-postgres.render.com)
+   avec SSL, car l'URL interne (dpg-...-a sans domaine) ne fonctionne
+   qu'entre services Render de la même région. Les deux URLs sont dans
+   config.py (DATABASE_URL_EXTERNAL / DATABASE_URL_INTERNAL).
+   Les tables et le compte admin sossoukouam / arrow2026 sont créés
+   automatiquement au démarrage.
 
-6. Cliquer "Create Web Service" → Render installe et démarre.
+6. Cliquer "Create Web Service" → Render installe et démarre
 
-7. Vérifier les logs :
-   - `✅ Connexion PostgreSQL établie`
-   - `✅ Compte admin prêt`
-   - `✅ Bot multi-canal démarré avec succès!`
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CORRECTIF (colonne telegram_id)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Le compte administrateur initial est créé automatiquement au premier
-démarrage dans cette même base. Connectez-vous dans le bot via « Se
-connecter » avec ADMIN_USERNAME et ADMIN_PASSWORD. Les inscriptions sont
-enregistrées dans la table `users`.
+La colonne users.telegram_id est de type TEXT dans la base
+base_de_donnees_hgxo, alors que le code envoyait un entier (int).
+asyncpg refusait la requête ("expected str, got int"), ce qui faisait
+échouer : la liaison du compte à la connexion, la création de compte
+depuis le bot et la reconnaissance de l'administrateur.
+
+Corrections appliquées :
+  - lectures : WHERE telegram_id::text = $1  avec str(telegram_id)
+  - écritures : UPDATE/INSERT avec str(telegram_id)
+  - schéma : telegram_id forcé en TEXT au démarrage
+  - message d'erreur explicite si la liaison échoue
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FONCTIONNEMENT DU SYSTÈME DE PAIEMENT

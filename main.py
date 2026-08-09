@@ -13,8 +13,7 @@ from datetime import datetime, timedelta, timezone
 from aiohttp import web
 import asyncpg
 import bcrypt as _bcrypt
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ChatMemberStatus, ChatAction
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ConversationHandler,
     CallbackQueryHandler, ChatMemberHandler, ContextTypes, filters
@@ -304,228 +303,6 @@ async def db_link_telegram_id(db_user_id: int, telegram_id: int) -> bool:
     except Exception as e:
         logger.error(f"DB link_telegram_id error: {e}")
         return False
-
-
-# ═══════════════════════════════════════════════════════════════
-# GESTION DES COMPTES EN BASE (admin)
-# ═══════════════════════════════════════════════════════════════
-
-ACCOUNTS_PAGE_SIZE = 8
-
-
-async def db_count_users() -> int:
-    if not db_pool:
-        return 0
-    try:
-        async with db_pool.acquire() as conn:
-            return int(await conn.fetchval("SELECT COUNT(*) FROM users") or 0)
-    except Exception as e:
-        logger.error(f"DB count_users error: {e}", exc_info=True)
-        return 0
-
-
-async def db_list_all_users(offset: int = 0, limit: int = ACCOUNTS_PAGE_SIZE):
-    """Liste paginée de TOUS les comptes enregistrés en base."""
-    if not db_pool:
-        return []
-    try:
-        async with db_pool.acquire() as conn:
-            return await conn.fetch(
-                """SELECT id, username, email, first_name, last_name, is_admin,
-                          is_premium, is_approved, telegram_id, plain_password,
-                          subscription_expires_at, created_at
-                   FROM users
-                   ORDER BY id ASC
-                   OFFSET $1 LIMIT $2""",
-                offset, limit,
-            )
-    except Exception as e:
-        logger.error(f"DB list_all_users error: {e}", exc_info=True)
-        return []
-
-
-async def db_get_user_by_id(user_db_id: int):
-    if not db_pool:
-        return None
-    try:
-        async with db_pool.acquire() as conn:
-            return await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_db_id)
-    except Exception as e:
-        logger.error(f"DB get_user_by_id error: {e}", exc_info=True)
-        return None
-
-
-async def db_delete_user(user_db_id: int):
-    """Supprime définitivement un compte. Retourne (ok, message)."""
-    if not db_pool:
-        return False, "Base de données indisponible."
-    try:
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "DELETE FROM users WHERE id = $1 RETURNING username, telegram_id", user_db_id
-            )
-        if not row:
-            return False, "Compte introuvable."
-        if row["telegram_id"]:
-            try:
-                db_admin_telegram_ids.discard(int(row["telegram_id"]))
-            except (TypeError, ValueError):
-                pass
-        return True, row["username"]
-    except Exception as e:
-        logger.error(f"DB delete_user error: {e}", exc_info=True)
-        return False, str(e)
-
-
-_ACCT_EDITABLE_FIELDS = {
-    "username": "Identifiant",
-    "email": "Email",
-    "first_name": "Prénom",
-    "last_name": "Nom",
-    "password": "Mot de passe",
-}
-
-
-async def db_update_user_field(user_db_id: int, field: str, value):
-    """Met à jour un champ autorisé d'un compte. Retourne (ok, message)."""
-    if not db_pool:
-        return False, "Base de données indisponible."
-    allowed = set(_ACCT_EDITABLE_FIELDS) | {"is_admin", "is_premium", "is_approved", "telegram_id"}
-    if field not in allowed:
-        return False, "Champ non autorisé."
-    try:
-        async with db_pool.acquire() as conn:
-            if field == "password":
-                pw_hash = _bcrypt.hashpw(str(value).encode(), _bcrypt.gensalt()).decode()
-                await conn.execute(
-                    "UPDATE users SET password_hash = $1, plain_password = $2 WHERE id = $3",
-                    pw_hash, str(value), user_db_id,
-                )
-            elif field == "telegram_id":
-                await conn.execute(
-                    "UPDATE users SET telegram_id = $1 WHERE id = $2",
-                    None if value is None else str(value), user_db_id,
-                )
-            else:
-                await conn.execute(
-                    f"UPDATE users SET {field} = $1 WHERE id = $2", value, user_db_id
-                )
-        return True, "ok"
-    except Exception as e:
-        err = str(e)
-        logger.error(f"DB update_user_field error ({field}): {err}", exc_info=True)
-        if "23505" in err or "unique" in err.lower():
-            return False, "Cette valeur est déjà utilisée par un autre compte."
-        return False, err
-
-
-def _acct_role(row):
-    if row["is_admin"]:
-        return "👑 Admin"
-    if row["is_premium"]:
-        return "⭐ Premium"
-    return "👤 Membre"
-
-
-async def build_accounts_list(page: int = 0):
-    """Construit le message + clavier de la liste de tous les comptes."""
-    total = await db_count_users()
-    if total == 0:
-        return (
-            "🗂 **Comptes enregistrés**\n\nAucun compte en base de données.",
-            InlineKeyboardMarkup([[InlineKeyboardButton("← Retour Admin", callback_data="admin_panel")]]),
-        )
-    pages = max(1, (total + ACCOUNTS_PAGE_SIZE - 1) // ACCOUNTS_PAGE_SIZE)
-    page = max(0, min(page, pages - 1))
-    rows = await db_list_all_users(page * ACCOUNTS_PAGE_SIZE, ACCOUNTS_PAGE_SIZE)
-
-    lines = [f"🗂 **Comptes enregistrés** — {total} au total (page {page + 1}/{pages})\n"]
-    keyboard = []
-    for r in rows:
-        lien = f"🔗 `{r['telegram_id']}`" if r["telegram_id"] else "⛔ non lié"
-        lines.append(
-            f"`#{r['id']}` {_acct_role(r)} — **{r['username']}**\n"
-            f"   ✉️ {r['email'] or '—'} | {lien}"
-        )
-        keyboard.append([
-            InlineKeyboardButton(f"#{r['id']} {r['username'][:18]}", callback_data=f"acct_view_{r['id']}")
-        ])
-
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("◀️ Précédent", callback_data=f"acct_list_{page - 1}"))
-    if page < pages - 1:
-        nav.append(InlineKeyboardButton("Suivant ▶️", callback_data=f"acct_list_{page + 1}"))
-    if nav:
-        keyboard.append(nav)
-    keyboard.append([InlineKeyboardButton("🔄 Rafraîchir", callback_data=f"acct_list_{page}")])
-    keyboard.append([InlineKeyboardButton("← Retour Admin", callback_data="admin_panel")])
-    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
-
-
-async def build_account_detail(user_db_id: int):
-    """Fiche détaillée d'un compte + actions (modifier / supprimer)."""
-    r = await db_get_user_by_id(user_db_id)
-    if not r:
-        return (
-            "❌ Compte introuvable (peut-être déjà supprimé).",
-            InlineKeyboardMarkup([[InlineKeyboardButton("← Liste", callback_data="acct_list_0")]]),
-        )
-    exp = r["subscription_expires_at"]
-    if exp:
-        now = datetime.now(timezone.utc)
-        e = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
-        rest = e - now
-        if rest.total_seconds() > 0:
-            h, rem = divmod(int(rest.total_seconds()), 3600)
-            abo = f"{h}h{rem // 60:02d}min restantes"
-        else:
-            abo = "⛔ expiré"
-    else:
-        abo = "—"
-
-    text = (
-        f"👤 **Compte #{r['id']}**\n\n"
-        f"• Identifiant : `{r['username']}`\n"
-        f"• Email : `{r['email'] or '—'}`\n"
-        f"• Prénom : `{r['first_name'] or '—'}`\n"
-        f"• Nom : `{r['last_name'] or '—'}`\n"
-        f"• Mot de passe : `{r['plain_password'] or '—'}`\n"
-        f"• Telegram ID : `{r['telegram_id'] or 'non lié'}`\n"
-        f"• Rôle : {_acct_role(r)}\n"
-        f"• Approuvé : {'✅' if r['is_approved'] else '❌'}\n"
-        f"• Abonnement : {abo}\n"
-        f"• Créé le : {r['created_at'].strftime('%d/%m/%Y %H:%M') if r['created_at'] else '—'}"
-    )
-    uid = r["id"]
-    keyboard = [
-        [InlineKeyboardButton("✏️ Identifiant", callback_data=f"acct_set_username_{uid}"),
-         InlineKeyboardButton("✏️ Email", callback_data=f"acct_set_email_{uid}")],
-        [InlineKeyboardButton("✏️ Prénom", callback_data=f"acct_set_first_name_{uid}"),
-         InlineKeyboardButton("✏️ Nom", callback_data=f"acct_set_last_name_{uid}")],
-        [InlineKeyboardButton("🔑 Mot de passe", callback_data=f"acct_set_password_{uid}")],
-        [InlineKeyboardButton(("👑 Retirer admin" if r["is_admin"] else "👑 Rendre admin"),
-                              callback_data=f"acct_toggle_is_admin_{uid}"),
-         InlineKeyboardButton(("⭐ Retirer premium" if r["is_premium"] else "⭐ Rendre premium"),
-                              callback_data=f"acct_toggle_is_premium_{uid}")],
-        [InlineKeyboardButton(("❌ Désapprouver" if r["is_approved"] else "✅ Approuver"),
-                              callback_data=f"acct_toggle_is_approved_{uid}")],
-        [InlineKeyboardButton("🔌 Délier Telegram", callback_data=f"acct_unlink_{uid}")],
-        [InlineKeyboardButton("🗑 Supprimer ce compte", callback_data=f"acct_del_{uid}")],
-        [InlineKeyboardButton("← Liste", callback_data="acct_list_0")],
-    ]
-    return text, InlineKeyboardMarkup(keyboard)
-
-
-async def accounts_command(update, context):
-    """Commande /comptes — liste tous les comptes enregistrés (admin uniquement)."""
-    user = update.effective_user
-    if not is_admin(user.id):
-        await update.message.reply_text("❌ Cette commande est réservée à l'administrateur.")
-        return
-    text, kb = await build_accounts_list(0)
-    await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
-
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1372,29 +1149,6 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await scan_command(update, context)
             return
 
-        elif action == "await_acct_field":
-            target_id = state.get("target_id")
-            field = state.get("field")
-            value = text.strip()
-            admin_state.pop(user.id, None)
-            if not value:
-                await update.message.reply_text("❌ Valeur vide, modification annulée.")
-                return
-            if field in ("username", "email"):
-                value = value.lower()
-            ok, msg = await db_update_user_field(target_id, field, value)
-            if ok:
-                await update.message.reply_text(
-                    f"✅ {_ACCT_EDITABLE_FIELDS.get(field, field)} mis à jour pour le compte #{target_id}."
-                )
-            else:
-                await update.message.reply_text(f"❌ Échec de la modification : {msg}")
-            detail_text, detail_kb = await build_account_detail(target_id)
-            await update.message.reply_text(detail_text, reply_markup=detail_kb, parse_mode="Markdown")
-            return
-
-
-
     # 1. Intercepter l'auth Telethon (admin uniquement)
     if is_admin(user.id) and user.id in telethon_manager.auth_state:
         msg, auth_done = await telethon_manager.process_auth_step(user.id, text)
@@ -1416,7 +1170,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     # Indiquer que le bot est en train d'écrire
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
         response = await ai_reply(user.id, text, bot=context.bot)
@@ -1453,7 +1207,7 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     chat = result.chat
     new_status = result.new_chat_member.status
 
-    if new_status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER):
+    if new_status in (ChatMember.ADMINISTRATOR, ChatMember.MEMBER):
         data = load_data()
         cid = str(chat.id)
         ch = get_channel_data(data, chat.id)
@@ -1489,7 +1243,7 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
 
         asyncio.create_task(scan_channel_members(context, chat.id, chat.title or cid))
 
-    elif new_status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
+    elif new_status in (ChatMember.LEFT, ChatMember.BANNED):
         data = load_data()
         cid = str(chat.id)
         if cid in data["channels"]:
@@ -1607,7 +1361,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if cid not in data.get("channels", {}):
         return
 
-    if new_member.status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR):
+    if new_member.status in (ChatMember.MEMBER, ChatMember.ADMINISTRATOR):
         uid = str(user.id)
         ch = get_channel_data(data, chat.id)
 
@@ -1751,7 +1505,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception as e:
                     logger.error(f"Erreur notif admin {admin_id}: {e}")
 
-    elif new_member.status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
+    elif new_member.status in (ChatMember.LEFT, ChatMember.BANNED):
         uid = str(user.id)
         data = load_data()
         if cid in data.get("channels", {}) and uid in data["channels"][cid].get("members", {}):
@@ -1790,8 +1544,6 @@ def build_admin_panel(data):
         [InlineKeyboardButton("🔌 Connecter Telethon", callback_data="admin_telethon_connect"),
          InlineKeyboardButton("📡 Statut Telethon", callback_data="admin_telethon_status")],
         [InlineKeyboardButton("🌐 Utilisateurs connectés", callback_data="admin_online_users")],
-        [InlineKeyboardButton("🗂 Comptes enregistrés (BD)", callback_data="acct_list_0")],
-
         [InlineKeyboardButton("💳 Payer", callback_data="pay_start"),
          InlineKeyboardButton("🎁 Bonus", callback_data="bonus_start"),
          InlineKeyboardButton("💬 Assistance", callback_data="assist_start")],
@@ -1938,107 +1690,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── GESTION DES COMPTES EN BASE (admin) ─────────────────────
-    if query.data.startswith("acct_"):
-        if not is_admin(update.effective_user.id):
-            await query.edit_message_text("❌ Accès refusé.")
-            return
-        d = query.data
-
-        if d.startswith("acct_list_"):
-            page = int(d.rsplit("_", 1)[1])
-            text, kb = await build_accounts_list(page)
-            await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
-            return
-
-        if d.startswith("acct_view_"):
-            target_id = int(d.rsplit("_", 1)[1])
-            text, kb = await build_account_detail(target_id)
-            await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
-            return
-
-        if d.startswith("acct_set_"):
-            rest = d[len("acct_set_"):]
-            field, target_id = rest.rsplit("_", 1)
-            target_id = int(target_id)
-            admin_state[update.effective_user.id] = {
-                "action": "await_acct_field", "target_id": target_id, "field": field,
-            }
-            label = _ACCT_EDITABLE_FIELDS.get(field, field)
-            await query.edit_message_text(
-                f"✏️ **Modification du compte #{target_id}**\n\n"
-                f"Envoyez la nouvelle valeur pour : **{label}**",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("← Annuler", callback_data=f"acct_view_{target_id}")]]
-                ),
-            )
-            return
-
-        if d.startswith("acct_toggle_"):
-            rest = d[len("acct_toggle_"):]
-            field, target_id = rest.rsplit("_", 1)
-            target_id = int(target_id)
-            row = await db_get_user_by_id(target_id)
-            if not row:
-                await query.edit_message_text("❌ Compte introuvable.")
-                return
-            new_val = not bool(row[field])
-            ok, msg = await db_update_user_field(target_id, field, new_val)
-            if ok and field == "is_admin" and row["telegram_id"]:
-                try:
-                    tid = int(row["telegram_id"])
-                    db_admin_telegram_ids.add(tid) if new_val else db_admin_telegram_ids.discard(tid)
-                except (TypeError, ValueError):
-                    pass
-            text, kb = await build_account_detail(target_id)
-            if not ok:
-                text = f"❌ Échec : {msg}\n\n" + text
-            await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
-            return
-
-        if d.startswith("acct_unlink_"):
-            target_id = int(d.rsplit("_", 1)[1])
-            row = await db_get_user_by_id(target_id)
-            if row and row["telegram_id"]:
-                try:
-                    db_admin_telegram_ids.discard(int(row["telegram_id"]))
-                except (TypeError, ValueError):
-                    pass
-            await db_update_user_field(target_id, "telegram_id", None)
-            text, kb = await build_account_detail(target_id)
-            await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
-            return
-
-        if d.startswith("acct_delok_"):
-            target_id = int(d.rsplit("_", 1)[1])
-            ok, msg = await db_delete_user(target_id)
-            list_text, list_kb = await build_accounts_list(0)
-            header = (f"🗑 Compte **{msg}** supprimé définitivement.\n\n" if ok
-                      else f"❌ Suppression impossible : {msg}\n\n")
-            await query.edit_message_text(header + list_text, reply_markup=list_kb, parse_mode="Markdown")
-            return
-
-        if d.startswith("acct_del_"):
-            target_id = int(d.rsplit("_", 1)[1])
-            row = await db_get_user_by_id(target_id)
-            if not row:
-                await query.edit_message_text("❌ Compte introuvable.")
-                return
-            await query.edit_message_text(
-                f"⚠️ **Confirmer la suppression**\n\n"
-                f"Compte `#{row['id']}` — **{row['username']}**\n"
-                f"Cette action est irréversible.",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🗑 Oui, supprimer", callback_data=f"acct_delok_{target_id}")],
-                    [InlineKeyboardButton("← Annuler", callback_data=f"acct_view_{target_id}")],
-                ]),
-            )
-            return
-
     # ── LISTE DES UTILISATEURS CONNECTÉS (admin) ────────────────
-
     if query.data == "admin_online_users":
         if not is_admin(update.effective_user.id):
             await query.edit_message_text("❌ Accès refusé.")
@@ -3875,7 +3527,7 @@ async def startup_channel_scan(bot):
                 ch["name"] = new_name
                 updated = True
             member = await bot.get_chat_member(int(cid), bot.id)
-            if member.status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
+            if member.status in (ChatMember.LEFT, ChatMember.BANNED):
                 to_remove.append(cid)
                 logger.warning(f"⚠️ Canal {cid} retiré (bot exclu ou banni).")
             else:
@@ -3917,17 +3569,13 @@ async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYP
 async def main():
     logger.info("🤖 Démarrage du bot multi-canal...")
 
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
 
     application.add_error_handler(global_error_handler)
 
     # Seule commande disponible: /start (ouvre le menu principal pour tout le monde)
     # Toutes les actions admin passent par les boutons inline
     application.add_handler(CommandHandler("start", start_command))
-    # Gestion des comptes en base (admin uniquement)
-    application.add_handler(CommandHandler("comptes", accounts_command))
-    application.add_handler(CommandHandler("accounts", accounts_command))
-
 
     # Callbacks boutons
     application.add_handler(CallbackQueryHandler(button_callback))
@@ -3960,7 +3608,7 @@ async def main():
 
     # Supprime un éventuel webhook actif : sinon start_polling plante avec une erreur
     # "Conflict: can't use getUpdates while a webhook is set" et le bot ne répond plus du tout.
-    await application.bot.delete_webhook()
+    await application.bot.delete_webhook(drop_pending_updates=True)
 
     await application.updater.start_polling(
         drop_pending_updates=True,

@@ -14,8 +14,7 @@ PORT = int(os.getenv("PORT", "5000"))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-_telev_id_str = os.getenv("TELETHON_API_ID", "29177661")
-TELETHON_API_ID = int(_telev_id_str) if _telev_id_str.strip() else 29177661
+TELETHON_API_ID = int(os.getenv("TELETHON_API_ID", "29177661"))
 TELETHON_API_HASH = os.getenv("TELETHON_API_HASH", "a8639172fa8d35dbfd8ea46286d349ab")
 TELETHON_SESSION = os.getenv("TELETHON_SESSION", "1BJWap1wBu5Q2QlA2XGCudsz-9zByA10uz2vjv__WqWqPKdRK67XZ48mI0kXJ9nTVfKHEit5iUXJEUnIP3nGWjNyxBKnQZ3ReKiGBfNpH05yVA_sNq5-7WdEAwwYyb0wbRp9gUH13fR1176pUNO5C92WsSFZ8KZaIgxWIMG8XdrZXd5dZaskufbaBH60pP_PmgdHZfERuJQKxqN1T1iQpR1n9jQWwjaBBCfGugF0r0-3A_u1lpzv-pQc-Uptx4XQbUpyzxXExx9hR3MFsCdv9s1Tjb4EawlLD3xcwgh4L_XOP9jwcwTCU5C_-B6Ur6kc8BKkb3h3Bs1efn--fID4y3fY7GpU7yis=")
 
